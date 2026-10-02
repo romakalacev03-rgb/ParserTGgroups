@@ -1,17 +1,14 @@
 """Обработчики aiogram: меню, подключение аккаунта, поиск, настройки."""
 
-STATE = {}      # user_id -> {"step": ..., ...}
-PENDING = {}    # user_id -> {"topic": ..., "queries": [...]}
+STATE = {}      
+PENDING = {}    
 RUNTIME = {"task": None, "stop": None}
 
-
-# ---------- вспомогательное ----------
 def _kb(rows):
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=t, callback_data=d) for t, d in row] for row in rows
     ])
-
 
 def menu_kb():
     return _kb([
@@ -19,7 +16,6 @@ def menu_kb():
         [("🔐 Аккаунт", "acc"), ("⚙️ Настройки", "settings")],
         [("🗑 Сбросить список найденных", "reset_found")],
     ])
-
 
 def _allowed(user_id, claim=False):
     from storage import get_owner, set_owner
@@ -31,24 +27,23 @@ def _allowed(user_id, claim=False):
         return False
     return owner == user_id
 
-
 async def _delete_quiet(message):
     try:
         await message.delete()
     except Exception:
         pass
 
-
 def settings_text(s):
     from storage import SETTINGS_META
     lines = ["⚙️ Текущие настройки:\n"]
-    for key, (label, _) in SETTINGS_META.items():
+    for key, (label, type_) in SETTINGS_META.items():
         v = s.get(key)
-        if isinstance(v, list):
+        if type_ == "bool":
+            v = "✅ Включены" if v else "❌ Выключены"
+        elif isinstance(v, list):
             v = ", ".join(v) or "—"
         lines.append(f"• {label}: {v}")
     return "\n".join(lines)
-
 
 def settings_kb():
     from storage import SETTINGS_META
@@ -57,25 +52,22 @@ def settings_kb():
     rows.append([("⬅️ Меню", "menu")])
     return _kb(rows)
 
-
 def parse_value(kind, text):
     import re
     if kind == "int":
         v = int(text)
-        if v < 0:
-            raise ValueError
+        if v < 0: raise ValueError
         return v
     if kind == "float":
         v = float(text.replace(",", "."))
-        if v < 0:
-            raise ValueError
+        if v < 0: raise ValueError
         return v
+    if kind == "bool":
+        return text.strip().lower() in ("да", "yes", "true", "1", "+", "вкл")
     if kind == "list":
-        if text.strip() in ("-", "0"):
-            return []
+        if text.strip() in ("-", "0"): return []
         return [w.strip().lower() for w in re.split(r"[,\n;]+", text) if w.strip()]
     raise ValueError
-
 
 def parse_query_list(text):
     import re
@@ -87,8 +79,6 @@ def parse_query_list(text):
             items.append(w)
     return items[:30]
 
-
-# ---------- команды ----------
 async def cmd_start(message):
     uid = message.from_user.id
     if not _allowed(uid, claim=True):
@@ -96,20 +86,16 @@ async def cmd_start(message):
         return
     STATE.pop(uid, None)
     await message.answer(
-        "👋 Привет! Я помогаю искать качественные публичные группы Telegram.\n\n"
+        "👋 Привет! Я помогаю искать публичные группы Telegram.\n\n"
         "1) Подключите аккаунт (🔐)\n2) Настройте фильтры (⚙️)\n3) Нажмите «Найти группы»",
         reply_markup=menu_kb(),
     )
 
-
 async def cmd_cancel(message):
-    if not _allowed(message.from_user.id):
-        return
+    if not _allowed(message.from_user.id): return
     STATE.pop(message.from_user.id, None)
     await message.answer("Отменено.", reply_markup=menu_kb())
 
-
-# ---------- inline-кнопки ----------
 async def on_callback(cb):
     uid = cb.from_user.id
     if not _allowed(uid):
@@ -122,17 +108,15 @@ async def on_callback(cb):
     if data == "menu":
         STATE.pop(uid, None)
         await msg.answer("Главное меню:", reply_markup=menu_kb())
-
     elif data == "acc":
         await show_account(msg)
     elif data == "acc_new":
         STATE[uid] = {"step": "api_id"}
-        await msg.answer("Введите API ID (получить: my.telegram.org → API development tools).\n/cancel — отмена")
+        await msg.answer("Введите API ID (число):\n/cancel — отмена")
     elif data == "acc_logout":
         from account import logout
         await logout()
         await msg.answer("Аккаунт отключён, сессия удалена.", reply_markup=menu_kb())
-
     elif data == "find":
         await begin_find(msg, uid)
     elif data == "q_ok":
@@ -151,10 +135,8 @@ async def on_callback(cb):
         else:
             await start_search(msg.bot, msg.chat.id, uid, int(val))
     elif data == "stop":
-        if RUNTIME["stop"]:
-            RUNTIME["stop"].set()
+        if RUNTIME["stop"]: RUNTIME["stop"].set()
         await msg.answer("⏳ Останавливаю, подождите завершения текущей проверки...")
-
     elif data == "settings":
         from storage import get_settings
         await msg.answer(settings_text(get_settings()), reply_markup=settings_kb())
@@ -172,17 +154,17 @@ async def on_callback(cb):
         key = data.split(":", 1)[1]
         if key in SETTINGS_META:
             STATE[uid] = {"step": "setting", "key": key}
-            hint = " (для очистки отправьте «-»)" if SETTINGS_META[key][1] == "list" else ""
+            hint = ""
+            if SETTINGS_META[key][1] == "list": hint = " (для очистки отправьте «-»)"
+            if SETTINGS_META[key][1] == "bool": hint = " (напишите Да или Нет)"
             await msg.answer(f"Введите новое значение: {SETTINGS_META[key][0]}{hint}")
-
     elif data == "reset_found":
-        await msg.answer("Удалить список уже найденных групп? Они снова смогут попасть в выдачу.",
+        await msg.answer("Удалить список уже найденных групп?",
                          reply_markup=_kb([[("Да, удалить", "reset_yes"), ("Нет", "menu")]]))
     elif data == "reset_yes":
         from storage import save_found_ids
         save_found_ids(set())
         await msg.answer("Список очищен.", reply_markup=menu_kb())
-
 
 async def show_account(msg):
     from account import get_client
@@ -202,7 +184,6 @@ async def show_account(msg):
             [("🔐 Подключить", "acc_new")], [("⬅️ Меню", "menu")],
         ]))
 
-
 async def begin_find(msg, uid):
     from account import get_client
     if RUNTIME["task"] and not RUNTIME["task"].done():
@@ -214,16 +195,17 @@ async def begin_find(msg, uid):
     STATE[uid] = {"step": "topic"}
     await msg.answer("Введите тематику для поиска (например: заработок):")
 
-
-# ---------- текстовые сообщения ----------
 async def on_text(message):
     uid = message.from_user.id
-    if not _allowed(uid):
-        return
+    if not _allowed(uid): return
     st = STATE.get(uid)
     if not st:
-        await message.answer("Нажмите /start, чтобы открыть меню.")
+        await message.answer(
+            "Извините, бот был перезагружен хостингом (Amvera), и забыл текущий шаг.\n\n"
+            "Пожалуйста, нажмите /start чтобы вернуться в меню."
+        )
         return
+    
     step = st["step"]
     text = (message.text or "").strip()
 
@@ -241,24 +223,24 @@ async def on_text(message):
             await message.answer("Похоже на неверный API Hash. Попробуйте ещё раз:")
             return
         st.update(step="phone", api_hash=text)
-        await message.answer("Введите номер телефона в международном формате (+49...):")
+        await message.answer("Введите номер телефона в любом формате (например +79991234567 или 7(999)123-45):")
 
     elif step == "phone":
         import re
         from account import begin_login
         await _delete_quiet(message)
-        phone = "+" + re.sub(r"\D", "", text)
+        # Очищаем все лишние символы, оставляем только цифры
+        clean_number = re.sub(r"\D", "", text)
+        phone = "+" + clean_number
+        
         try:
             st["login"] = await begin_login(st["api_id"], st["api_hash"], phone)
         except Exception as e:
             STATE.pop(uid, None)
-            await message.answer(f"❌ Не удалось отправить код: {type(e).__name__}\n"
-                                 f"Проверьте API ID/Hash и номер, затем начните заново.", reply_markup=menu_kb())
+            await message.answer(f"❌ Не удалось отправить код (Ошибка: {e}). Проверьте данные и начните заново.", reply_markup=menu_kb())
             return
         st["step"] = "code"
-        await message.answer(
-            "📩 Код отправлен в Telegram. Введите его, разделив цифры тире или пробелами "
-            "(например 1-2-3-4-5) — иначе Telegram может аннулировать код, отправленный в чат.")
+        await message.answer("📩 Код отправлен в Telegram. Введите его, разделив цифры тире (1-2-3-4-5).")
 
     elif step == "code":
         import re
@@ -281,6 +263,7 @@ async def on_text(message):
             STATE.pop(uid, None)
             await message.answer(f"❌ Ошибка входа: {type(e).__name__}", reply_markup=menu_kb())
             return
+            
         if res == "password":
             st["step"] = "password"
             await message.answer("🔑 Включена двухфакторная защита. Введите пароль:")
@@ -315,8 +298,7 @@ async def on_text(message):
             await _delete_quiet(wait)
             PENDING[uid] = {"topic": text, "queries": [text]}
             st["step"] = "queries_edit"
-            await message.answer(f"⚠️ LLM недоступен ({e}).\nОтправьте список запросов вручную "
-                                 f"(через запятую или с новой строки):")
+            await message.answer(f"⚠️ ИИ недоступен: {e}\nОтправьте список запросов вручную (через запятую):")
             return
         await _delete_quiet(wait)
         PENDING[uid] = {"topic": text, "queries": queries}
@@ -351,15 +333,12 @@ async def on_text(message):
         STATE.pop(uid, None)
         await message.answer("✅ Сохранено.\n\n" + settings_text(get_settings()), reply_markup=settings_kb())
 
-
 async def _show_queries(message, queries):
     listing = "\n".join(f"• {q}" for q in queries)
     await message.answer(f"🧠 Поисковые запросы:\n\n{listing}\n\nИспользовать эти запросы для поиска?",
                          reply_markup=_kb([[("✅ Да", "q_ok"), ("✏️ Свой список", "q_edit")],
                                            [("❌ Отмена", "menu")]]))
 
-
-# ---------- запуск поиска ----------
 async def start_search(bot, chat_id, uid, limit):
     import asyncio
     if RUNTIME["task"] and not RUNTIME["task"].done():
@@ -370,7 +349,6 @@ async def start_search(bot, chat_id, uid, limit):
         return
     RUNTIME["stop"] = asyncio.Event()
     RUNTIME["task"] = asyncio.create_task(run_search(bot, chat_id, uid, limit, RUNTIME["stop"]))
-
 
 async def run_search(bot, chat_id, uid, limit, stop):
     import logging
@@ -385,8 +363,7 @@ async def run_search(bot, chat_id, uid, limit, stop):
     last = {"text": ""}
 
     async def progress(text):
-        if text == last["text"]:
-            return
+        if text == last["text"]: return
         last["text"] = text
         try:
             await bot.edit_message_text(text, chat_id=chat_id, message_id=status.message_id, reply_markup=stop_kb)
@@ -396,14 +373,13 @@ async def run_search(bot, chat_id, uid, limit, stop):
     try:
         client = await get_client()
         if not client:
-            await bot.send_message(chat_id, "Аккаунт не подключён или сессия недействительна.", reply_markup=menu_kb())
+            await bot.send_message(chat_id, "Аккаунт не подключён.", reply_markup=menu_kb())
             return
         results, stats = await collect_groups(
             client, PENDING[uid]["queries"], limit, get_settings(), progress, stop, load_found_ids())
     except Exception as e:
         log.exception("search failed")
-        await bot.send_message(chat_id, f"❌ Ошибка поиска: {type(e).__name__}: {e}\n"
-                                        f"(возможно, аккаунт ограничен или сессия отозвана)", reply_markup=menu_kb())
+        await bot.send_message(chat_id, f"❌ Ошибка поиска: {e}", reply_markup=menu_kb())
         return
     finally:
         RUNTIME["task"] = None
@@ -413,10 +389,9 @@ async def run_search(bot, chat_id, uid, limit, stop):
     summary = (f"🏁 Готово. Найдено: {len(results)}/{limit}\n"
                f"Запросов выполнено: {stats['queries_done']}, глубоко проверено: {stats['checked']}, "
                f"уже было в базе: {stats['duplicates']}\nОтсев по причинам:\n{rtxt}")
-    if stats["stopped"]:
-        summary += f"\n⚠️ Остановлено: {stats['stopped']}"
-    elif stop.is_set():
-        summary += "\n⛔ Остановлено пользователем"
+    if stats["stopped"]: summary += f"\n⚠️ Остановлено: {stats['stopped']}"
+    elif stop.is_set(): summary += "\n⛔ Остановлено пользователем"
+    
     await bot.send_message(chat_id, summary)
 
     if results:
@@ -424,9 +399,7 @@ async def run_search(bot, chat_id, uid, limit, stop):
         await bot.send_document(chat_id, FSInputFile(p, filename="result_groups.txt"),
                                 caption=f"Найдено групп: {len(results)}", reply_markup=menu_kb())
     else:
-        await bot.send_message(chat_id, "Ничего не найдено. Попробуйте смягчить фильтры в ⚙️ Настройках.",
-                               reply_markup=menu_kb())
-
+        await bot.send_message(chat_id, "Ничего не найдено.", reply_markup=menu_kb())
 
 def build_router():
     from aiogram import Router, F
