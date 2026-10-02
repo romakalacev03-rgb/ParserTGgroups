@@ -1,9 +1,7 @@
 """Генерация поисковых запросов через внешний LLM (OpenAI-совместимый API)."""
 
-
 class LLMError(Exception):
     pass
-
 
 def parse_queries(text):
     import json
@@ -25,7 +23,6 @@ def parse_queries(text):
             clean.append(s)
     return clean[:30]
 
-
 async def generate_queries(topic, language="ru"):
     import os
     import aiohttp
@@ -33,8 +30,13 @@ async def generate_queries(topic, language="ru"):
     key = os.getenv("LLM_API_KEY", "").strip()
     if not key:
         raise LLMError("не задан LLM_API_KEY")
-    url = os.getenv("LLM_API_URL", "https://api.openai.com/v1/chat/completions")
-    model = os.getenv("LLM_MODEL", "gpt-4o-mini")
+    
+    url = os.getenv("LLM_API_URL", "https://api.openai.com/v1/chat/completions").strip()
+    # Авто-исправление ссылки для OpenRouter
+    if url == "https://openrouter.ai" or url == "https://openrouter.ai/":
+        url = "https://openrouter.ai/api/v1/chat/completions"
+
+    model = os.getenv("LLM_MODEL", "gpt-4o-mini").strip()
 
     prompt = (
         f"Сгенерируй до 20 коротких поисковых запросов (1-3 слова) для поиска публичных чатов "
@@ -43,6 +45,7 @@ async def generate_queries(topic, language="ru"):
     )
     payload = {"model": model, "messages": [{"role": "user", "content": prompt}]}
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    
     try:
         timeout = aiohttp.ClientTimeout(total=60)
         async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -50,11 +53,15 @@ async def generate_queries(topic, language="ru"):
                 body = await resp.text()
                 if resp.status != 200:
                     raise LLMError(f"HTTP {resp.status}: {body[:200]}")
-                data = await resp.json(content_type=None)
+                try:
+                    data = await resp.json(content_type=None)
+                except Exception:
+                    raise LLMError(f"Ошибка JSON. Ответ сервера: {body[:100]}...")
+        
         text = data["choices"][0]["message"]["content"]
     except LLMError:
         raise
-    except Exception as e:  # сеть, таймаут, неожиданный формат
+    except Exception as e:
         raise LLMError(f"{type(e).__name__}: {e}")
 
     queries = parse_queries(text)
