@@ -5,7 +5,6 @@ BOT_RATIO_MAX = 0.5
 DUP_RATIO_MAX = 0.3
 SHORT_RATIO_MAX = 0.6
 
-
 def age_days(dt, now):
     from datetime import timezone
     if dt is None:
@@ -14,14 +13,11 @@ def age_days(dt, now):
         dt = dt.replace(tzinfo=timezone.utc)
     return (now - dt).days
 
-
 def has_stop_word(text, stop_words):
     low = (text or "").lower()
     return any(w and w in low for w in stop_words)
 
-
 def detect_language(text):
-    """Грубая эвристика по алфавиту: ru / uk / en / None."""
     cyr = lat = uk = ru_only = 0
     for ch in text.lower():
         if "а" <= ch <= "я" or ch in "ёіїєґ":
@@ -41,7 +37,6 @@ def detect_language(text):
         return "en"
     return None
 
-
 def analyze_messages(messages, now, window_hours):
     import re
     from collections import Counter
@@ -52,7 +47,7 @@ def analyze_messages(messages, now, window_hours):
     senders, texts, counter = set(), [], Counter()
 
     for m in messages:
-        if getattr(m, "action", None) is not None:  # служебные (вход/выход)
+        if getattr(m, "action", None) is not None:
             continue
         total += 1
         if m.date and (now - m.date).total_seconds() <= cutoff:
@@ -84,7 +79,6 @@ def analyze_messages(messages, now, window_hours):
         "texts": texts,
     }
 
-
 def is_spammy(a):
     return (
         a["link_ratio"] > LINK_RATIO_MAX
@@ -93,58 +87,50 @@ def is_spammy(a):
         or a["short_ratio"] > SHORT_RATIO_MAX
     )
 
-
 def quick_check(chat, settings, now):
-    """Проверка по данным из выдачи поиска. Возвращает причину отсева или None."""
     from telethon.tl.types import Channel
 
-    if not isinstance(chat, Channel):
-        return "not_channel_type"
-    if chat.broadcast or not chat.megagroup:
-        return "not_group"
-    if not chat.username:
-        return "not_public"
-    if getattr(chat, "scam", False) or getattr(chat, "fake", False):
-        return "scam_or_fake"
-    if getattr(chat, "restricted", False):
-        return "restricted"
-    if getattr(chat, "join_request", False):
-        return "join_request"
+    # Базовые проверки Telegram (что это супергруппа и она публичная)
+    if not isinstance(chat, Channel): return "not_channel_type"
+    if chat.broadcast or not chat.megagroup: return "not_group"
+    if not chat.username: return "not_public"
+
+    # Если фильтры отключены пользователем — пропускаем группу дальше
+    if not settings.get("use_filters", True):
+        return None
+
+    if getattr(chat, "scam", False) or getattr(chat, "fake", False): return "scam_or_fake"
+    if getattr(chat, "restricted", False): return "restricted"
+    if getattr(chat, "join_request", False): return "join_request"
+    
     members = getattr(chat, "participants_count", None)
-    if members is not None and members < settings["min_members"]:
-        return "few_members"
+    if members is not None and members < settings["min_members"]: return "few_members"
+    
     age = age_days(chat.date, now)
-    if age is not None and age < settings["min_age_days"]:
-        return "too_new"
-    if has_stop_word(chat.title, settings["stop_words"]):
-        return "stop_word"
+    if age is not None and age < settings["min_age_days"]: return "too_new"
+    if has_stop_word(chat.title, settings["stop_words"]): return "stop_word"
+    
     return None
 
-
 def deep_check(info, settings, now):
-    """Проверка после загрузки описания и сообщений. Возвращает причину отсева или None."""
-    if info["members"] < settings["min_members"]:
-        return "few_members"
+    if not settings.get("use_filters", True):
+        return None
+
+    if info["members"] < settings["min_members"]: return "few_members"
     about = (info["about"] or "").strip()
-    if len(about) < settings["min_desc_len"]:
-        return "short_description"
+    if len(about) < settings["min_desc_len"]: return "short_description"
 
     a = info["analysis"]
     blob = " ".join([info["title"], about] + a["texts"])
-    if has_stop_word(blob, settings["stop_words"]):
-        return "stop_word"
-    if a["recent"] < settings["min_msgs"]:
-        return "low_activity"
-    if a["unique_senders"] < settings["min_unique_senders"]:
-        return "few_authors"
-    if is_spammy(a):
-        return "spam"
+    if has_stop_word(blob, settings["stop_words"]): return "stop_word"
+    if a["recent"] < settings["min_msgs"]: return "low_activity"
+    if a["unique_senders"] < settings["min_unique_senders"]: return "few_authors"
+    if is_spammy(a): return "spam"
 
     age = age_days(info["date"], now)
     if age is not None:
-        if age < settings["min_age_days"]:
-            return "too_new"
-        if age > settings["max_age_days"] and a["recent"] < settings["min_msgs"] * 3:
+        if age < settings["min_age_days"]: return "too_new"
+        if age > settings.get("max_age_days", 3650) and a["recent"] < settings["min_msgs"] * 3:
             return "old_inactive"
 
     want = settings["language"]
@@ -152,4 +138,5 @@ def deep_check(info, settings, now):
         lang = detect_language((info["title"] + " " + about + " " + " ".join(a["texts"][:40]))[:5000])
         if lang is not None and lang != want:
             return "wrong_language"
+            
     return None
